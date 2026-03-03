@@ -1,5 +1,11 @@
+import re
 from PIL import Image, ImageDraw, ImageFont
 from core.models import TextDesign
+import numpy as np
+from numpy.typing import NDArray
+import base64
+from io import BytesIO
+import cv2
 
 
 def apply_directional_gradient(image: Image.Image, text_zone: str, darkness: int = 210) -> Image.Image:
@@ -43,117 +49,167 @@ def apply_directional_gradient(image: Image.Image, text_zone: str, darkness: int
 
     return Image.alpha_composite(image, overlay).convert("RGB")
 
-
-def _get_safe_zone(W: int, H: int, zone: str):
-    """Return (safe_left, safe_right, safe_top, safe_bottom) for a text zone."""
-    px, py = int(W * 0.04), int(H * 0.06)
-    zones = {
-        "left":        (px,            int(W * 0.50) - px, py,            H - py),
-        "top-band":    (px,            W - px,             py,            int(H * 0.45) - py),
-        "bottom-band": (px,            W - px,             int(H * 0.58) + py, H - py),
-        "center":      (int(W * 0.10), W - int(W * 0.10),  int(H * 0.20), H - int(H * 0.20)),
-    }
-    return zones.get(zone, zones["center"])
-
-
 def render_text(image: Image.Image, title: str, text_design: TextDesign) -> Image.Image:
-    """Render title text centered (horizontally + vertically) inside its text zone."""
-    draw = ImageDraw.Draw(image)
-    W, H = image.size
+    import re
 
-    zone = text_design.text_zone.lower()
-    safe_left, safe_right, safe_top, safe_bottom = _get_safe_zone(W, H, zone)
-    safe_width  = safe_right  - safe_left
-    safe_height = safe_bottom - safe_top
+    GAP          = 16
+    LINE_SPACING = 14
+    RENDER_SIZE  = 120
+    sw           = text_design.stroke_width
 
-    emphasis_words = [w.upper() for w in text_design.emphasis_words]
+    emphasis_set = {re.sub(r'[^A-Z0-9]', '', w.upper()) for w in text_design.emphasis_words}
 
-    def _get_font(size: int) -> ImageFont.FreeTypeFont:
+    def is_emp(word: str) -> bool:
+        return re.sub(r'[^A-Z0-9]', '', word.upper()) in emphasis_set
+
+    def load_font(size: int):
         try:
-            return ImageFont.truetype("arialbd.ttf", size)
+            return ImageFont.truetype("arialbd.ttf", max(size, 1))
         except:
             return ImageFont.load_default()
 
-    # --- Find largest font that fits ---
-    base_size    = 140
-    min_size     = 36
-    word_spacing = 20
-    lines        = []
-    line_heights = []
-    total_height = 0
+    base_font = load_font(RENDER_SIZE)
+    emp_font  = load_font(int(RENDER_SIZE * text_design.emphasis_scale))
 
-    while base_size > min_size:
-        base_font = _get_font(base_size)
-        lines, current = [], ""
+    # ── 1. Define safe zone first so we know wrap width ──────────────────
+    W, H  = image.size
+    zone  = text_design.text_zone.lower().strip()
+    zones = {
+        "left":        (0.08, 0.50, 0.08, 0.92),
+        "right":       (0.50, 0.92, 0.08, 0.92),
+        "top-band":    (0.08, 0.92, 0.08, 0.50),
+        "bottom-band": (0.08, 0.92, 0.50, 0.92),
+        "center":      (0.08, 0.92, 0.08, 0.92),
+    }
+    lx, rx, ty, by = zones.get(zone, zones["center"])
+    SL, SR = int(W * lx), int(W * rx)
+    ST, SB = int(H * ty), int(H * by)
+    SAFE_W = SR - SL
+    SAFE_H = SB - ST
 
-        for word in title.upper().split():
-            test = (current + " " + word).strip()
-            if draw.textbbox((0, 0), test, font=base_font)[2] <= safe_width:
-                current = test
-            else:
-                if current:
-                    lines.append(current)
-                current = word
-        if current:
+    # ── 2. Word-wrap using safe wrap width ────────────────────────────
+    dummy  = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+
+    def word_dim(word, font):
+        bb = dummy.textbbox((0, 0), word, font=font, stroke_width=sw)
+        return bb[2] - bb[0], bb[3] - bb[1]
+
+    lines, current, current_w = [], [], 0
+    for word in title.upper().split():
+        f      = emp_font if is_emp(word) else base_font
+        ww, _  = word_dim(word, f)
+        needed = ww if not current else ww + GAP
+        if current and current_w + needed > SAFE_W:
             lines.append(current)
+            current, current_w = [word], ww
+        else:
+            current.append(word)
+            current_w += needed
+    if current:
+        lines.append(current)
 
-        line_heights, total_height = [], 0
-        for line in lines:
-            max_h = max(
-                draw.textbbox((0, 0), w, font=_get_font(
-                    int(base_size * text_design.emphasis_scale) if w in emphasis_words else base_size
-                ))[3]
-                for w in line.split()
+    # ── 3. Measure full text block ────────────────────────────────────────
+    line_dims = []
+    for line in lines:
+        lw = lh = 0
+        for i, word in enumerate(line):
+            f = emp_font if is_emp(word) else base_font
+            ww, wh = word_dim(word, f)
+            lw += ww + (GAP if i > 0 else 0)
+            lh  = max(lh, wh)
+        line_dims.append((lw, lh))
+
+    block_w = max(lw for lw, _ in line_dims)
+    block_h = sum(lh for _, lh in line_dims) + LINE_SPACING * (len(lines) - 1)
+
+    # Add padding so stroke + shadow don't get clipped at canvas edges
+    PAD = sw + max(abs(text_design.shadow_offset[0]), abs(text_design.shadow_offset[1])) + 4
+    canvas_w = block_w + PAD * 2
+    canvas_h = block_h + PAD * 2
+
+    # ── 4. Render text onto transparent canvas ───────────────────────────
+    PAD    = sw + max(abs(text_design.shadow_offset[0]), abs(text_design.shadow_offset[1])) + 60
+    canvas = Image.new("RGBA", (block_w + PAD * 2, block_h + PAD * 2), (0, 0, 0, 0))
+    cdraw  = ImageDraw.Draw(canvas)
+
+    y = PAD
+    for (lw, lh), line in zip(line_dims, lines):
+        x = PAD + (block_w - lw) // 2
+
+        for i, word in enumerate(line):
+            f    = emp_font if is_emp(word) else base_font
+            fill = text_design.secondary_color if is_emp(word) else text_design.primary_color
+            ww, wh = word_dim(word, f)
+            wy   = y + (lh - wh) // 2
+
+            cdraw.text(
+                (x + text_design.shadow_offset[0], wy + text_design.shadow_offset[1]),
+                word, font=f, fill=text_design.shadow_color
             )
-            line_heights.append(max_h)
-            total_height += max_h + 20
-
-        if total_height <= safe_height:
-            break
-        base_size -= 5
-
-    # Vertically center the whole text block within the zone
-    y = safe_top + (safe_height - total_height) // 2
-
-    for i, line in enumerate(lines):
-        line_height = line_heights[i]
-        word_list   = line.split()
-
-        # Pre-compute per-word font, width, height
-        word_data = []
-        for word in word_list:
-            is_em = word in emphasis_words
-            fs    = int(base_size * text_design.emphasis_scale) if is_em else base_size
-            font  = _get_font(fs)
-            bbox  = draw.textbbox((0, 0), word, font=font)
-            word_data.append({
-                "word":  word,
-                "font":  font,
-                "w":     bbox[2] - bbox[0],
-                "h":     bbox[3] - bbox[1],
-                "is_em": is_em,
-            })
-
-        true_line_w = sum(d["w"] for d in word_data) + word_spacing * (len(word_data) - 1)
-        x_cursor    = safe_left + (safe_width - true_line_w) // 2
-
-        for d in word_data:
-            y_offset   = (line_height - d["h"]) // 2
-            fill_color = text_design.secondary_color if d["is_em"] else text_design.primary_color
-
-            # Shadow
-            draw.text(
-                (x_cursor + text_design.shadow_offset[0], y + y_offset + text_design.shadow_offset[1]),
-                d["word"], font=d["font"], fill=text_design.shadow_color,
+            cdraw.text(
+                (x, wy), word, font=f,
+                fill=fill,
+                stroke_width=sw,
+                stroke_fill=text_design.secondary_stroke_color if is_emp(word) else text_design.primary_stroke_color
             )
-            # Stroke + text
-            draw.text(
-                (x_cursor, y + y_offset),
-                d["word"], font=d["font"], fill=fill_color,
-                stroke_width=text_design.stroke_width, stroke_fill=text_design.stroke_color,
-            )
-            x_cursor += d["w"] + word_spacing
+            x += ww + GAP
 
-        y += line_height + 20
+        y += lh + LINE_SPACING
 
-    return image
+    # ── 5. Crop to actual rendered pixels (eliminates all measurement error)
+    bbox = canvas.getbbox()  # returns (left, top, right, bottom) of non-transparent pixels
+    if bbox:
+        canvas = canvas.crop(bbox)
+
+    # ── 6. Scale to fit safe zone preserving aspect ratio ────────────────
+    cw, ch = canvas.size
+    scale  = min(SAFE_W / cw, SAFE_H / ch)
+    new_w  = int(cw * scale)
+    new_h  = int(ch * scale)
+    canvas = canvas.resize((new_w, new_h), Image.LANCZOS)
+
+    # ── 7. Paste centered within safe zone ───────────────────────────────
+    if zone == "top-band":
+        paste_y = ST
+    elif zone == "bottom-band":
+        paste_y = SB - new_h
+    else:
+        paste_y = ST + (SAFE_H - new_h) // 2
+
+    if zone == "left":
+        paste_x = SL
+    elif zone == "right":
+        paste_x = SR - new_w
+    else:
+        paste_x = SL + (SAFE_W - new_w) // 2
+
+    image = image.convert("RGBA")
+    image.paste(canvas, (paste_x, paste_y), canvas)
+    return image.convert("RGB")
+
+def pil_to_base64(image: Image.Image, fmt: str = "PNG") -> str:
+    """Convert a PIL image to a base64-encoded string."""
+    buffer = BytesIO()
+    image.save(buffer, format=fmt)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+def rgb_to_sobel(image: NDArray[np.uint8]) -> NDArray[np.uint8]:
+    """
+    Convert an RGB/BGR image to Sobel edge magnitude image.
+
+    Args:
+        image: Input image as uint8 NumPy array of shape (H, W, 3)
+
+    Returns:
+        Sobel magnitude image as uint8 NumPy array of shape (H, W, 3)
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+
+    magnitude = np.sqrt(sobelx**2 + sobely**2)
+    magnitude = np.uint8(255 * magnitude / np.max(magnitude))
+    sobel_bgr = cv2.cvtColor(magnitude, cv2.COLOR_GRAY2BGR)
+    sobel_rgb = cv2.cvtColor(sobel_bgr, cv2.COLOR_BGR2RGB)
+    return sobel_rgb

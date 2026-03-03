@@ -1,5 +1,5 @@
 import gradio as gr
-from pipeline.thumbnail_generator import generate_thumbnail_pipeline
+from pipeline.solo_pipeline import generate_thumbnail_pipeline
 
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="AI YouTube Thumbnail Generator") as app:
@@ -12,11 +12,12 @@ def build_ui() -> gr.Blocks:
         )
         generate_btn  = gr.Button("Generate Thumbnail", variant="primary")
         output_image  = gr.Image(type="pil", label="Generated Thumbnail")
+        output_attempt = gr.Textbox(label="Generation Attempt Details")
 
         generate_btn.click(
             fn=generate_thumbnail_pipeline,
             inputs=prompt_input,
-            outputs=output_image,
+            outputs=[output_image, output_attempt],
         )
 
     return app

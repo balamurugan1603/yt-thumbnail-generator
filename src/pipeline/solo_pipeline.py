@@ -27,7 +27,8 @@ class CheckResult:
     error: ThumbnailPipelineError | None = None
     # For tiebreaking (lower edge_density / higher contrast ratio = better)
     edge_density: float | None = None
-    contrast_ratio: float | None = None
+    primary_contrast_ratio: float | None = None
+    secondary_contrast_ratio: float | None = None
     artifact_probability: float | None = None
 
 @dataclass
@@ -55,17 +56,20 @@ def _run_checks(bg, spec, retry_cfg) -> list[CheckResult]:
 
     # --- Contrast ---
     try:
-        check_text_contrast(bg, spec.text_design)
+        ratios = check_text_contrast(bg, spec.text_design)
         results.append(CheckResult(
             name="contrast",
             passed=True,
+            primary_contrast_ratio=ratios["primary"],
+            secondary_contrast_ratio=ratios["secondary"],
         ))
     except LowTextImageContrastRatioError as e:
         results.append(CheckResult(
             name="contrast",
             passed=False,
             error=e,
-            contrast_ratio=e.ratio,
+            primary_contrast_ratio=e.primary_ratio,
+            secondary_contrast_ratio=e.secondary_ratio,
         ))
 
     # --- Clutter ---
@@ -86,10 +90,11 @@ def _run_checks(bg, spec, retry_cfg) -> list[CheckResult]:
 
     # --- Artifact Detection ---
     try:
-        check_background_content(bg)
+        artifacts = check_background_content(bg)
         results.append(CheckResult(
             name="artifact",
             passed=True,
+            artifact_probability=artifacts[0]["neg_score"],
         ))
     except ArtifactDetectedError as e:
         results.append(CheckResult(
@@ -114,8 +119,13 @@ def _best_fallback(attempts: list[GenerationAttempt]) -> GenerationAttempt:
         for c in a.check_results:
             if c.name == "clutter" and c.edge_density is not None:
                 score += 1.0 - c.edge_density      # lower clutter = higher score
-            elif c.name == "contrast" and c.contrast_ratio is not None:
-                score += c.contrast_ratio / 21.0   # normalize WCAG max ratio
+            elif c.name == "contrast":
+                contrast_ratio_score = 0
+                if c.primary_contrast_ratio is not None:
+                    contrast_ratio_score += c.primary_contrast_ratio / 21.0   # normalize WCAG max ratio
+                if c.secondary_contrast_ratio is not None:
+                    contrast_ratio_score += c.secondary_contrast_ratio / 21.0
+                score += contrast_ratio_score / 2.0  # average of primary and secondary ratios
             elif c.name == "artifact" and c.artifact_probability is not None:
                 score += 1.0 - c.artifact_probability  # lower artifact probability = higher score
         return score
@@ -127,7 +137,7 @@ def generate_thumbnail_pipeline(
     prompt: str,
     model_id: str = SDXL_ID,
     retry_cfg: RetryConfig = RetryConfig(),
-) -> Image.Image | None:
+) -> tuple[Image.Image, GenerationAttempt] | None:
 
     try:
         check_prompt_length(prompt)
@@ -175,19 +185,19 @@ def generate_thumbnail_pipeline(
             break
     else:
         if retry_cfg.fallback_to_best:
-            best = _best_fallback(attempts)
+            attempt = _best_fallback(attempts)
             logger.warning(
                 "All %d attempts failed. Falling back to attempt %d "
                 "(checks_passed=%d/%d, failed_on=%s)",
                 retry_cfg.max_attempts,
-                best.attempt_num,
-                best.checks_passed,
+                attempt.attempt_num,
+                attempt.checks_passed,
                 NUM_CHECKS,
-                best.failed_check.name if best.failed_check else "none",
+                attempt.failed_check.name if attempt.failed_check else "none",
             )
-            bg = best.image
+            bg = attempt.image
         else:
             logger.error("All %d attempts failed — aborting", retry_cfg.max_attempts)
             return None
 
-    return render_text(bg, prompt, spec.text_design)
+    return (render_text(bg, prompt, spec.text_design), attempt)

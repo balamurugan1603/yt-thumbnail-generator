@@ -21,15 +21,17 @@ class NonEnglishPromptError(ThumbnailPipelineError):
         super().__init__(f"Prompt is not in English: {prompt!r}")
 
 class LowTextImageContrastRatioError(ThumbnailPipelineError):
-    def __init__(self, bg_color: tuple, text_color: tuple, ratio: float, role: str, threshold: float):
+    def __init__(self, bg_color: tuple, primary_text_color: tuple, secondary_text_color: tuple, primary_contrast_ratio: float, secondary_contrast_ratio: float, role: str, threshold: float):
         self.bg_color = bg_color
-        self.text_color = text_color
-        self.ratio = ratio
+        self.primary_text_color = primary_text_color
+        self.secondary_text_color = secondary_text_color
+        self.primary_contrast_ratio = primary_contrast_ratio
+        self.secondary_contrast_ratio = secondary_contrast_ratio
         self.role = role        # "primary" or "secondary"
         self.threshold = threshold
         super().__init__(
-            f"{role} text contrast too low: ratio={ratio:.2f} < threshold={threshold:.2f} "
-            f"(bg={bg_color}, text={text_color})"
+            f"{role} text contrast too low: ratio={getattr(self, f'{role}_contrast_ratio'):.2f} < threshold={threshold:.2f} "
+            f"(bg={bg_color}, text={getattr(self, f'{role}_text_color')})"
         )
 
 class ArtifactDetectedError(ThumbnailPipelineError):

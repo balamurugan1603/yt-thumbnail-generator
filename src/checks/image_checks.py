@@ -51,18 +51,25 @@ def check_text_contrast(
 ):
     bg_color = dominant_color_in_zone(image, text_design.text_zone)
 
+    ratios = {}
     for role, text_color in [
         ("primary",   text_design.primary_color),
         ("secondary", text_design.secondary_color),
     ]:
         text_color = hex_to_rgb_bytes(text_color)
         ratio = contrast_ratio(bg_color, text_color)
+        ratios[role] = ratio
+
+    for role, ratio in ratios.items():
         if ratio < threshold:
             raise LowTextImageContrastRatioError(
                 bg_color=bg_color,
-                text_color=text_color,
-                ratio=ratio,
+                primary_text_color=text_design.primary_color,
+                secondary_text_color=text_design.secondary_color,
+                primary_contrast_ratio=ratios.get("primary"),
+                secondary_contrast_ratio=ratios.get("secondary"),
                 role=role,
                 threshold=threshold,
             )
+    return ratios
 

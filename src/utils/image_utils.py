@@ -1,4 +1,3 @@
-import re
 from PIL import Image, ImageDraw, ImageFont
 from core.models import TextDesign
 import numpy as np
@@ -7,6 +6,13 @@ import base64
 from io import BytesIO
 import cv2
 
+ZONES = {
+    "left":        (0.08, 0.50, 0.08, 0.92),
+    "right":       (0.50, 0.92, 0.08, 0.92),
+    "top-band":    (0.08, 0.92, 0.08, 0.50),
+    "bottom-band": (0.08, 0.92, 0.50, 0.92),
+    "center":      (0.08, 0.92, 0.08, 0.92),
+}
 
 def apply_directional_gradient(image: Image.Image, text_zone: str, darkness: int = 210) -> Image.Image:
     """Darken only the text zone with a directional gradient, leaving the subject vivid."""
@@ -225,17 +231,8 @@ def calculate_zone_edge_density(image: Image.Image, text_design: TextDesign) -> 
 
     H, W = gray.shape[:2]
 
-    # --- Same zones as render_text ---
-    zones = {
-        "left":        (0.08, 0.50, 0.08, 0.92),
-        "right":       (0.50, 0.92, 0.08, 0.92),
-        "top-band":    (0.08, 0.92, 0.08, 0.50),
-        "bottom-band": (0.08, 0.92, 0.50, 0.92),
-        "center":      (0.08, 0.92, 0.08, 0.92),
-    }
-
     zone = text_design.text_zone.lower().strip()
-    lx, rx, ty, by = zones.get(zone, zones["center"])
+    lx, rx, ty, by = ZONES.get(zone, ZONES["center"])
 
     SL, SR = int(W * lx), int(W * rx)
     ST, SB = int(H * ty), int(H * by)
@@ -250,3 +247,44 @@ def calculate_zone_edge_density(image: Image.Image, text_design: TextDesign) -> 
         "zone": zone,
         "edge_density": float(edge_density)
     }
+
+def get_zone_bounds(image: Image.Image, text_zone: str) -> tuple[int, int, int, int]:
+    """
+    Resolves a zone name to pixel bounds (SL, SR, ST, SB),
+    matching the same coordinate logic as calculate_zone_edge_density.
+    """
+    W, H = image.size
+    lx, rx, ty, by = ZONES.get(text_zone.lower().strip(), ZONES["center"])
+    SL, SR = int(W * lx), int(W * rx)
+    ST, SB = int(H * ty), int(H * by)
+    return SL, SR, ST, SB
+
+def dominant_color_in_zone(image: Image.Image, text_zone: str) -> tuple[int, int, int]:
+    """
+    Crops to the named text zone and returns the dominant color
+    after median-cut quantization to 8 buckets.
+    """
+    SL, SR, ST, SB = get_zone_bounds(image, text_zone)
+    region = image.crop((SL, ST, SR, SB)).convert("RGB")
+
+    quantized = region.quantize(colors=8, method=Image.Quantize.MEDIANCUT).convert("RGB")
+    pixels = np.array(quantized).reshape(-1, 3)
+    colors, counts = np.unique(pixels, axis=0, return_counts=True)
+    dominant = colors[np.argmax(counts)]
+    return tuple(int(c) for c in dominant)
+
+def relative_luminance(rgb: tuple[int, int, int]) -> float:
+    def channel(c: int) -> float:
+        s = c / 255.0
+        return s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4
+    r, g, b = rgb
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+def contrast_ratio(color_a: tuple, color_b: tuple) -> float:
+    la, lb = relative_luminance(color_a), relative_luminance(color_b)
+    lighter, darker = max(la, lb), min(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+
+def hex_to_rgb_bytes(hex_code):
+    hex_code = hex_code.lstrip('#')
+    return tuple(bytes.fromhex(hex_code))

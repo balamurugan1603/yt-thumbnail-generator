@@ -19,3 +19,15 @@ class NonEnglishPromptError(ThumbnailPipelineError):
     def __init__(self, prompt: str):
         self.prompt = prompt
         super().__init__(f"Prompt is not in English: {prompt!r}")
+
+class LowTextImageContrastRatioError(ThumbnailPipelineError):
+    def __init__(self, bg_color: tuple, text_color: tuple, ratio: float, role: str, threshold: float):
+        self.bg_color = bg_color
+        self.text_color = text_color
+        self.ratio = ratio
+        self.role = role        # "primary" or "secondary"
+        self.threshold = threshold
+        super().__init__(
+            f"{role} text contrast too low: ratio={ratio:.2f} < threshold={threshold:.2f} "
+            f"(bg={bg_color}, text={text_color})"
+        )

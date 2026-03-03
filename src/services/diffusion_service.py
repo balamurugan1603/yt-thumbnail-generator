@@ -12,7 +12,7 @@ def generate_image(model_id: str, diffusion_input: StableDiffusionLLMInput | Sta
         "negative_prompt": diffusion_input.negative_prompt,
         "width":           IMAGE_WIDTH,
         "height":          IMAGE_HEIGHT,
-        "guidance":        7.5,
+        "guidance":        10,
         "seed":            seed,
     }
     

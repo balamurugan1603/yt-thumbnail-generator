@@ -4,30 +4,111 @@ from services.llm_service import get_diffusion_input
 from services.diffusion_service import generate_image
 from utils.image_utils import apply_directional_gradient, render_text
 from utils.lang_utils import is_english
-from checks.image_checks import check_zone_clutter
+from checks.image_checks import check_zone_clutter, check_text_contrast
 from checks.prompt_checks import check_prompt_length, check_prompt_language
 from exceptions.pipeline_exceptions import (
     ThumbnailPipelineError, 
-    ClutterCheckError
+    ClutterCheckError,
+    LowTextImageContrastRatioError
 )
+from dataclasses import dataclass, field
+from PIL import Image
 import logging
-import time
-from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+NUM_CHECKS = 2
+
+@dataclass
+class CheckResult:
+    name: str
+    passed: bool
+    error: ThumbnailPipelineError | None = None
+    # For tiebreaking (lower edge_density / higher contrast ratio = better)
+    edge_density: float | None = None
+    contrast_ratio: float | None = None
+
 @dataclass
 class GenerationAttempt:
-    seed: int
-    image: object          # PIL Image
-    edge_density: float
     attempt_num: int
+    seed: int
+    image: Image.Image
+    check_results: list[CheckResult] = field(default_factory=list)
+
+    @property
+    def checks_passed(self) -> int:
+        return sum(1 for c in self.check_results if c.passed)
+
+    @property
+    def failed_check(self) -> CheckResult | None:
+        return next((c for c in self.check_results if not c.passed), None)
+
+    @property
+    def all_passed(self) -> bool:
+        return len(self.check_results) == NUM_CHECKS and self.checks_passed == NUM_CHECKS
+
+
+def _run_checks(bg, spec, retry_cfg) -> list[CheckResult]:
+    results = []
+
+    # --- Clutter ---
+    try:
+        clutterness = check_zone_clutter(bg, spec.text_design, cfg=retry_cfg)
+        results.append(CheckResult(
+            name="clutter",
+            passed=True,
+            edge_density=clutterness["edge_density"],
+        ))
+    except ClutterCheckError as e:
+        results.append(CheckResult(
+            name="clutter",
+            passed=False,
+            error=e,
+            edge_density=e.edge_density,
+        ))
+
+    # --- Contrast ---
+    try:
+        check_text_contrast(bg, spec.text_design)
+        results.append(CheckResult(
+            name="contrast",
+            passed=True,
+        ))
+    except LowTextImageContrastRatioError as e:
+        results.append(CheckResult(
+            name="contrast",
+            passed=False,
+            error=e,
+            contrast_ratio=e.ratio,
+        ))
+
+    return results
+
+
+def _best_fallback(attempts: list[GenerationAttempt]) -> GenerationAttempt:
+    """
+    Pick the attempt with the most checks passed.
+    Tiebreak by summing normalized scores across all checks:
+      - clutter:  1 - edge_density         (lower density → closer to 1)
+      - contrast: ratio / 21.0             (higher ratio  → closer to 1)
+    """
+    def tiebreak_score(a: GenerationAttempt) -> float:
+        score = 0.0
+        for c in a.check_results:
+            if c.name == "clutter" and c.edge_density is not None:
+                score += 1.0 - c.edge_density      # lower clutter = higher score
+            elif c.name == "contrast" and c.contrast_ratio is not None:
+                score += c.contrast_ratio / 21.0   # normalize WCAG max ratio
+        return score
+
+    return max(attempts, key=lambda a: (a.checks_passed, tiebreak_score(a)))
+
 
 def generate_thumbnail_pipeline(
     prompt: str,
     model_id: str = SDXL_ID,
     retry_cfg: RetryConfig = RetryConfig(),
-) -> object | None:
+) -> Image.Image | None:
 
     try:
         check_prompt_length(prompt)
@@ -36,62 +117,58 @@ def generate_thumbnail_pipeline(
         logger.error("Prompt validation failed: %s", e)
         return None
 
-    # --- Prompt enhancement ---
     spec = get_diffusion_input(prompt, seed=SEED)
     logger.info("Prompt enhanced | sdxl_prompt=%r", spec.prompt)
 
     attempts: list[GenerationAttempt] = []
 
-    for attempt_num, offset in enumerate(retry_cfg.seed_offsets[: retry_cfg.max_attempts], start=1):
+    for attempt_num, offset in enumerate(retry_cfg.seed_offsets[:retry_cfg.max_attempts], start=1):
         attempt_seed = SEED + offset
-        logger.info(
-            "Image generation attempt %d/%d | seed=%d",
-            attempt_num, retry_cfg.max_attempts, attempt_seed,
-        )
+        logger.info("Generation attempt %d/%d | seed=%d", attempt_num, retry_cfg.max_attempts, attempt_seed)
 
         try:
             bg = generate_image(model_id=model_id, diffusion_input=spec, seed=attempt_seed)
             bg = apply_directional_gradient(bg, spec.text_design.text_zone)
             bg.save(f"artifacts/bg-attempt{attempt_num}-seed{attempt_seed}.png")
-            clutterness = check_zone_clutter(bg, spec.text_design, cfg=retry_cfg)
-        except ClutterCheckError as e:
-            logger.warning("Attempt %d clutter check failed | %s", attempt_num, e)
-            attempts.append(GenerationAttempt(
-                seed=attempt_seed,
-                image=bg,
-                edge_density=e.edge_density,
-                attempt_num=attempt_num,
-            ))
-            continue
         except ThumbnailPipelineError as e:
-            logger.error("Attempt %d unrecoverable pipeline error: %s", attempt_num, e)
-            return None
-        
-        # Only reaches here if check passed
-        logger.info("Clutter check passed on attempt %d", attempt_num)
-        break
-    
-    else:
-        # All attempts exhausted without passing the threshold
-        if not attempts:
-            logger.error("All %d attempts failed with exceptions — aborting", retry_cfg.max_attempts)
+            logger.error("Attempt %d image generation failed: %s", attempt_num, e)
             return None
 
+        check_results = _run_checks(bg, spec, retry_cfg)
+        attempt = GenerationAttempt(
+            attempt_num=attempt_num,
+            seed=attempt_seed,
+            image=bg,
+            check_results=check_results,
+        )
+        attempts.append(attempt)
+
+        logger.info(
+            "Attempt %d | checks_passed=%d/%d | failed_on=%s",
+            attempt_num,
+            attempt.checks_passed,
+            NUM_CHECKS,
+            attempt.failed_check.name if attempt.failed_check else "none",
+        )
+
+        if attempt.all_passed:
+            logger.info("All checks passed on attempt %d", attempt_num)
+            break
+    else:
         if retry_cfg.fallback_to_best:
-            best = min(attempts, key=lambda a: a.edge_density)
+            best = _best_fallback(attempts)
             logger.warning(
-                "All %d attempts exceeded clutter threshold. "
-                "Falling back to best attempt (attempt=%d, edge_density=%.4f)",
-                retry_cfg.max_attempts, best.attempt_num, best.edge_density,
+                "All %d attempts failed. Falling back to attempt %d "
+                "(checks_passed=%d/%d, failed_on=%s)",
+                retry_cfg.max_attempts,
+                best.attempt_num,
+                best.checks_passed,
+                NUM_CHECKS,
+                best.failed_check.name if best.failed_check else "none",
             )
             bg = best.image
         else:
-            logger.error(
-                "All %d attempts exceeded clutter threshold — aborting",
-                retry_cfg.max_attempts,
-            )
+            logger.error("All %d attempts failed — aborting", retry_cfg.max_attempts)
             return None
 
-    bg.save(f"artifacts/bg-{int(time.time())}.png")
-    result = render_text(bg, prompt, spec.text_design)
-    return result
+    return render_text(bg, prompt, spec.text_design)

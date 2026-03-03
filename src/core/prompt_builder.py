@@ -12,9 +12,10 @@ CRITICAL IMAGE RULES
 - Keep the  background to the right half only and leave left blank
 - Keep the background minimal and avoid clutter to maximize text readability and CTR
 - The image must not distort or occlude the subject with text
-- The image MUST NOT contain - Add to negative prompt: humans, faces, hands, symbols, text, letters, numbers, logos, watermarks, or typography.
+- The image MUST NOT contain - humans, faces, hands, symbols, text, letters, numbers, logos, watermarks, or typography. Add these to negative prompt.
 - High contrast and readability across light/dark YouTube theme
 - Sufficient contrast ratio between text and background
+- Do not instruct the model to generate text or typography, only visual elements that complement the title and leave negative space for text
 - Only include background elements and not any foreground objects that may interfere with text readability
 ========================
 EXAMPLE PROMPT

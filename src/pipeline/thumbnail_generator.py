@@ -4,9 +4,10 @@ from services.llm_service import get_diffusion_input
 from services.diffusion_service import generate_image
 from utils.image_utils import apply_directional_gradient, render_text
 from utils.lang_utils import is_english
-from checks.image_checks import check_zone_clutter, check_text_contrast
+from checks.image_checks import check_background_content, check_zone_clutter, check_text_contrast
 from checks.prompt_checks import check_prompt_length, check_prompt_language
 from exceptions.pipeline_exceptions import (
+    ArtifactDetectedError,
     ThumbnailPipelineError, 
     ClutterCheckError,
     LowTextImageContrastRatioError
@@ -17,7 +18,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-NUM_CHECKS = 2
+NUM_CHECKS = 3
 
 @dataclass
 class CheckResult:
@@ -27,6 +28,7 @@ class CheckResult:
     # For tiebreaking (lower edge_density / higher contrast ratio = better)
     edge_density: float | None = None
     contrast_ratio: float | None = None
+    artifact_probability: float | None = None
 
 @dataclass
 class GenerationAttempt:
@@ -51,6 +53,21 @@ class GenerationAttempt:
 def _run_checks(bg, spec, retry_cfg) -> list[CheckResult]:
     results = []
 
+    # --- Contrast ---
+    try:
+        check_text_contrast(bg, spec.text_design)
+        results.append(CheckResult(
+            name="contrast",
+            passed=True,
+        ))
+    except LowTextImageContrastRatioError as e:
+        results.append(CheckResult(
+            name="contrast",
+            passed=False,
+            error=e,
+            contrast_ratio=e.ratio,
+        ))
+
     # --- Clutter ---
     try:
         clutterness = check_zone_clutter(bg, spec.text_design, cfg=retry_cfg)
@@ -67,19 +84,19 @@ def _run_checks(bg, spec, retry_cfg) -> list[CheckResult]:
             edge_density=e.edge_density,
         ))
 
-    # --- Contrast ---
+    # --- Artifact Detection ---
     try:
-        check_text_contrast(bg, spec.text_design)
+        check_background_content(bg)
         results.append(CheckResult(
-            name="contrast",
+            name="artifact",
             passed=True,
         ))
-    except LowTextImageContrastRatioError as e:
+    except ArtifactDetectedError as e:
         results.append(CheckResult(
-            name="contrast",
+            name="artifact",
             passed=False,
             error=e,
-            contrast_ratio=e.ratio,
+            artifact_probability=e.neg_score,
         ))
 
     return results
@@ -99,6 +116,8 @@ def _best_fallback(attempts: list[GenerationAttempt]) -> GenerationAttempt:
                 score += 1.0 - c.edge_density      # lower clutter = higher score
             elif c.name == "contrast" and c.contrast_ratio is not None:
                 score += c.contrast_ratio / 21.0   # normalize WCAG max ratio
+            elif c.name == "artifact" and c.artifact_probability is not None:
+                score += 1.0 - c.artifact_probability  # lower artifact probability = higher score
         return score
 
     return max(attempts, key=lambda a: (a.checks_passed, tiebreak_score(a)))

@@ -31,3 +31,12 @@ class LowTextImageContrastRatioError(ThumbnailPipelineError):
             f"{role} text contrast too low: ratio={ratio:.2f} < threshold={threshold:.2f} "
             f"(bg={bg_color}, text={text_color})"
         )
+
+class ArtifactDetectedError(ThumbnailPipelineError):
+    def __init__(self, pos_score: float, neg_score: float):
+        self.pos_score = pos_score
+        self.neg_score = neg_score
+        super().__init__(
+            f"Background contains unwanted content (faces/hands/text/symbols): "
+            f"clean={pos_score:.4f} content={neg_score:.4f}"
+        )

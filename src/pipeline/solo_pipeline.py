@@ -8,7 +8,7 @@ from checks.image_checks import check_background_content, check_zone_clutter, ch
 from checks.prompt_checks import check_prompt_length, check_prompt_language
 from exceptions.pipeline_exceptions import (
     ArtifactDetectedError,
-    ThumbnailPipelineError, 
+    ThumbnailPipelineError,
     ClutterCheckError,
     LowTextImageContrastRatioError
 )

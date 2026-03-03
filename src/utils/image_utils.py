@@ -213,3 +213,40 @@ def rgb_to_sobel(image: NDArray[np.uint8]) -> NDArray[np.uint8]:
     sobel_bgr = cv2.cvtColor(magnitude, cv2.COLOR_GRAY2BGR)
     sobel_rgb = cv2.cvtColor(sobel_bgr, cv2.COLOR_BGR2RGB)
     return sobel_rgb
+
+def calculate_zone_edge_density(image: Image.Image, text_design: TextDesign) -> dict:
+    """
+    Returns clutter metrics for the LLM-selected text zone.
+    """
+
+    # --- Convert to OpenCV ---
+    img = np.array(image)
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+    H, W = gray.shape[:2]
+
+    # --- Same zones as render_text ---
+    zones = {
+        "left":        (0.08, 0.50, 0.08, 0.92),
+        "right":       (0.50, 0.92, 0.08, 0.92),
+        "top-band":    (0.08, 0.92, 0.08, 0.50),
+        "bottom-band": (0.08, 0.92, 0.50, 0.92),
+        "center":      (0.08, 0.92, 0.08, 0.92),
+    }
+
+    zone = text_design.text_zone.lower().strip()
+    lx, rx, ty, by = zones.get(zone, zones["center"])
+
+    SL, SR = int(W * lx), int(W * rx)
+    ST, SB = int(H * ty), int(H * by)
+
+    region = gray[ST:SB, SL:SR]
+
+    # --- Edge Density ---
+    edges = cv2.Canny(region, 100, 200)
+    edge_density = np.sum(edges > 0) / edges.size
+
+    return {
+        "zone": zone,
+        "edge_density": float(edge_density)
+    }

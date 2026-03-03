@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from dataclasses import dataclass, field
 
 load_dotenv()
 
@@ -15,3 +16,13 @@ CLOUDFLARE_HEADERS = {"Authorization": f"Bearer {CLOUDFLARE_API_KEY}"}
 
 IMAGE_WIDTH  = 1280
 IMAGE_HEIGHT = 720
+WORD_LIMIT = 15
+
+@dataclass
+class RetryConfig:
+    max_attempts: int = 4
+    clutter_threshold: float = 0.075
+    # Each attempt uses a different seed offset to get varied generations
+    seed_offsets: list[int] = field(default_factory=lambda: [0, 7, 13, 31])
+    # If all retries fail, fall back to the least-cluttered attempt
+    fallback_to_best: bool = True

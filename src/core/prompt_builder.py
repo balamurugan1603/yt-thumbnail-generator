@@ -10,7 +10,7 @@ CRITICAL IMAGE RULES
 - Prompt must instruct subject to be on opposite side of text_zone
 - Leave the LEFT side (~45% width) as dark, blurred, or minimal negative space for text
 - Keep the  background to the right half only and leave left blank
-- Keep the background minimal and avoid clutter to maximize text readability and CTR
+- Keep the background in abstract design style, minimal and avoid clutter to maximize text readability and CTR
 - The image must not distort or occlude the subject with text
 - The image MUST NOT contain - humans, faces, hands, symbols, text, letters, numbers, logos, watermarks, or typography. Add these to negative prompt.
 - High contrast and readability across light/dark YouTube theme
@@ -20,7 +20,7 @@ CRITICAL IMAGE RULES
 ========================
 EXAMPLE PROMPT
 ========================
-<Short description about subject> on the right half of the image, Blank space on the left.
+Abstract representation of <Short description about subject> on the right half of the image, Blank space on the left.
 - Do not include words like text, typography in the prompt, only add to negative prompt
 ========================
 TEXT DESIGN RULES

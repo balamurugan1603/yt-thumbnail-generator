@@ -42,3 +42,11 @@ class ArtifactDetectedError(ThumbnailPipelineError):
             f"Background contains unwanted content (faces/hands/text/symbols): "
             f"clean={pos_score:.4f} content={neg_score:.4f}"
         )
+
+class PromptImageSimilarityError(ThumbnailPipelineError):
+    def __init__(self, score: float, threshold: float):
+        self.score = score
+        self.threshold = threshold
+        super().__init__(
+            f"CLIP score too low: score={score:.4f} < threshold={threshold:.4f}"
+        )

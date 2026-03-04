@@ -13,12 +13,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from PIL import Image
 
-from settings.config import SDXL_ID, RetryConfig
+from settings.config import MAX_CONCURRENCY, SDXL_ID, RetryConfig
 from pipeline.solo_pipeline import GenerationAttempt, generate_thumbnail_pipeline
 
 logger = logging.getLogger(__name__)
-
-MAX_CONCURRENCY = 10
 
 
 @dataclass
@@ -31,7 +29,7 @@ class BatchResult:
     best_attempt: GenerationAttempt | None = None
 
 
-@dataclass 
+@dataclass
 class BatchSummary:
     total: int
     succeeded: int
@@ -75,18 +73,46 @@ async def _run_single(
             duration = time.perf_counter() - t0
 
             if image is None:
-                logger.warning("Failed  [%d/%d] | pipeline returned None | prompt=%r", index, total, prompt)
-                return BatchResult(prompt=prompt, image=None, success=False,
-                                   error="Pipeline returned None", duration=duration, best_attempt=attempt)
+                logger.warning(
+                    "Failed  [%d/%d] | pipeline returned None | prompt=%r",
+                    index,
+                    total,
+                    prompt,
+                )
+                return BatchResult(
+                    prompt=prompt,
+                    image=None,
+                    success=False,
+                    error="Pipeline returned None",
+                    duration=duration,
+                    best_attempt=attempt,
+                )
 
-            logger.info("Done    [%d/%d] | duration=%.2fs | prompt=%r", index, total, duration, prompt)
-            return BatchResult(prompt=prompt, image=image, success=True, duration=duration, best_attempt=attempt)
+            logger.info(
+                "Done    [%d/%d] | duration=%.2fs | prompt=%r",
+                index,
+                total,
+                duration,
+                prompt,
+            )
+            return BatchResult(
+                prompt=prompt,
+                image=image,
+                success=True,
+                duration=duration,
+                best_attempt=attempt,
+            )
 
         except Exception as e:
             duration = time.perf_counter() - t0
             logger.error("Error   [%d/%d] | %s | prompt=%r", index, total, e, prompt)
-            return BatchResult(prompt=prompt, image=None, success=False,
-                               error=str(e), duration=duration)
+            return BatchResult(
+                prompt=prompt,
+                image=None,
+                success=False,
+                error=str(e),
+                duration=duration,
+            )
 
 
 async def generate_thumbnails_batch(
@@ -111,11 +137,13 @@ async def generate_thumbnails_batch(
         logger.warning("Empty prompt list passed to batch pipeline")
         return BatchSummary(total=0, succeeded=0, failed=0, duration=0.0)
 
-    total     = len(prompts)
+    total = len(prompts)
     semaphore = asyncio.Semaphore(max_concurrency)
 
     # ThreadPoolExecutor sized to concurrency — pipeline is CPU/IO bound, not async-native
-    executor  = ThreadPoolExecutor(max_workers=max_concurrency, thread_name_prefix="thumbnail")
+    executor = ThreadPoolExecutor(
+        max_workers=max_concurrency, thread_name_prefix="thumbnail"
+    )
 
     logger.info("Batch started | total=%d | max_concurrency=%d", total, max_concurrency)
     t0 = time.perf_counter()
@@ -131,18 +159,22 @@ async def generate_thumbnails_batch(
         )
         for i, prompt in enumerate(prompts)
     ]
-    
+
     try:
         results = await asyncio.gather(*coroutines, return_exceptions=False)
     finally:
         executor.shutdown(wait=True)
 
     succeeded = sum(1 for r in results if r.success)
-    duration  = time.perf_counter() - t0
+    duration = time.perf_counter() - t0
 
     logger.info(
         "Batch complete | total=%d | succeeded=%d | failed=%d | duration=%.2fs | success_rate=%.1f%%",
-        total, succeeded, total - succeeded, duration, (succeeded / total) * 100,
+        total,
+        succeeded,
+        total - succeeded,
+        duration,
+        (succeeded / total) * 100,
     )
 
     return BatchSummary(

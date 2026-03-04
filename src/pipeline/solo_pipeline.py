@@ -1,16 +1,21 @@
-import time
-from settings.config import SDXL_ID, SEED, RetryConfig
+from settings.config import SDXL_ID, SEED, TEMPERATURE, RetryConfig
 from services.llm_service import get_diffusion_input
 from services.diffusion_service import generate_image
 from utils.image_utils import apply_directional_gradient, render_text
 from utils.lang_utils import is_english
-from checks.image_checks import check_background_content, check_zone_clutter, check_text_contrast
+from checks.image_checks import (
+    check_background_content,
+    check_clip_score,
+    check_zone_clutter,
+    check_text_contrast,
+)
 from checks.prompt_checks import check_prompt_length, check_prompt_language
 from exceptions.pipeline_exceptions import (
     ArtifactDetectedError,
+    PromptImageSimilarityError,
     ThumbnailPipelineError,
     ClutterCheckError,
-    LowTextImageContrastRatioError
+    LowTextImageContrastRatioError,
 )
 from dataclasses import dataclass, field
 from PIL import Image
@@ -18,7 +23,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-NUM_CHECKS = 3
+NUM_CHECKS = 4
+
 
 @dataclass
 class CheckResult:
@@ -30,6 +36,8 @@ class CheckResult:
     primary_contrast_ratio: float | None = None
     secondary_contrast_ratio: float | None = None
     artifact_probability: float | None = None
+    clip_score: float | None = None
+
 
 @dataclass
 class GenerationAttempt:
@@ -48,7 +56,9 @@ class GenerationAttempt:
 
     @property
     def all_passed(self) -> bool:
-        return len(self.check_results) == NUM_CHECKS and self.checks_passed == NUM_CHECKS
+        return (
+            len(self.check_results) == NUM_CHECKS and self.checks_passed == NUM_CHECKS
+        )
 
 
 def _run_checks(bg, spec, retry_cfg) -> list[CheckResult]:
@@ -57,52 +67,84 @@ def _run_checks(bg, spec, retry_cfg) -> list[CheckResult]:
     # --- Contrast ---
     try:
         ratios = check_text_contrast(bg, spec.text_design)
-        results.append(CheckResult(
-            name="contrast",
-            passed=True,
-            primary_contrast_ratio=ratios["primary"],
-            secondary_contrast_ratio=ratios["secondary"],
-        ))
+        results.append(
+            CheckResult(
+                name="contrast",
+                passed=True,
+                primary_contrast_ratio=ratios["primary"],
+                secondary_contrast_ratio=ratios["secondary"],
+            )
+        )
     except LowTextImageContrastRatioError as e:
-        results.append(CheckResult(
-            name="contrast",
-            passed=False,
-            error=e,
-            primary_contrast_ratio=e.primary_ratio,
-            secondary_contrast_ratio=e.secondary_ratio,
-        ))
+        results.append(
+            CheckResult(
+                name="contrast",
+                passed=False,
+                error=e,
+                primary_contrast_ratio=e.primary_contrast_ratio,
+                secondary_contrast_ratio=e.secondary_contrast_ratio,
+            )
+        )
 
     # --- Clutter ---
     try:
         clutterness = check_zone_clutter(bg, spec.text_design, cfg=retry_cfg)
-        results.append(CheckResult(
-            name="clutter",
-            passed=True,
-            edge_density=clutterness["edge_density"],
-        ))
+        results.append(
+            CheckResult(
+                name="clutter",
+                passed=True,
+                edge_density=clutterness["edge_density"],
+            )
+        )
     except ClutterCheckError as e:
-        results.append(CheckResult(
-            name="clutter",
-            passed=False,
-            error=e,
-            edge_density=e.edge_density,
-        ))
+        results.append(
+            CheckResult(
+                name="clutter",
+                passed=False,
+                error=e,
+                edge_density=e.edge_density,
+            )
+        )
 
     # --- Artifact Detection ---
     try:
         artifacts = check_background_content(bg)
-        results.append(CheckResult(
-            name="artifact",
-            passed=True,
-            artifact_probability=artifacts[0]["neg_score"],
-        ))
+        results.append(
+            CheckResult(
+                name="artifact",
+                passed=True,
+                artifact_probability=artifacts[0]["neg_score"],
+            )
+        )
     except ArtifactDetectedError as e:
-        results.append(CheckResult(
-            name="artifact",
-            passed=False,
-            error=e,
-            artifact_probability=e.neg_score,
-        ))
+        results.append(
+            CheckResult(
+                name="artifact",
+                passed=False,
+                error=e,
+                artifact_probability=e.neg_score,
+            )
+        )
+
+    # --- CLIP score ---
+    try:
+        clip_score = check_clip_score(bg, spec.prompt)
+        results.append(
+            CheckResult(
+                name="clip",
+                passed=True,
+                clip_score=clip_score,
+            )
+        )
+    except PromptImageSimilarityError as e:
+        results.append(
+            CheckResult(
+                name="clip",
+                passed=False,
+                error=e,
+                clip_score=e.score,
+            )
+        )
 
     return results
 
@@ -114,20 +156,29 @@ def _best_fallback(attempts: list[GenerationAttempt]) -> GenerationAttempt:
       - clutter:  1 - edge_density         (lower density → closer to 1)
       - contrast: ratio / 21.0             (higher ratio  → closer to 1)
     """
+
     def tiebreak_score(a: GenerationAttempt) -> float:
         score = 0.0
         for c in a.check_results:
             if c.name == "clutter" and c.edge_density is not None:
-                score += 1.0 - c.edge_density      # lower clutter = higher score
+                score += 1.0 - c.edge_density  # lower clutter = higher score
             elif c.name == "contrast":
                 contrast_ratio_score = 0
                 if c.primary_contrast_ratio is not None:
-                    contrast_ratio_score += c.primary_contrast_ratio / 21.0   # normalize WCAG max ratio
+                    contrast_ratio_score += (
+                        c.primary_contrast_ratio / 21.0
+                    )  # normalize WCAG max ratio
                 if c.secondary_contrast_ratio is not None:
                     contrast_ratio_score += c.secondary_contrast_ratio / 21.0
-                score += contrast_ratio_score / 2.0  # average of primary and secondary ratios
+                score += (
+                    contrast_ratio_score / 2.0
+                )  # average of primary and secondary ratios
             elif c.name == "artifact" and c.artifact_probability is not None:
-                score += 1.0 - c.artifact_probability  # lower artifact probability = higher score
+                score += (
+                    1.0 - c.artifact_probability
+                )  # lower artifact probability = higher score
+            elif c.name == "clip" and c.clip_score is not None:
+                score += c.clip_score  # higher CLIP score = higher score
         return score
 
     return max(attempts, key=lambda a: (a.checks_passed, tiebreak_score(a)))
@@ -146,17 +197,26 @@ def generate_thumbnail_pipeline(
         logger.error("Prompt validation failed: %s", e)
         return None
 
-    spec = get_diffusion_input(prompt, seed=SEED)
+    spec = get_diffusion_input(prompt, seed=SEED, temperature=TEMPERATURE)
     logger.info("Prompt enhanced | sdxl_prompt=%r", spec.prompt)
 
     attempts: list[GenerationAttempt] = []
 
-    for attempt_num, offset in enumerate(retry_cfg.seed_offsets[:retry_cfg.max_attempts], start=1):
+    for attempt_num, offset in enumerate(
+        retry_cfg.seed_offsets[: retry_cfg.max_attempts], start=1
+    ):
         attempt_seed = SEED + offset
-        logger.info("Generation attempt %d/%d | seed=%d", attempt_num, retry_cfg.max_attempts, attempt_seed)
+        logger.info(
+            "Generation attempt %d/%d | seed=%d",
+            attempt_num,
+            retry_cfg.max_attempts,
+            attempt_seed,
+        )
 
         try:
-            bg = generate_image(model_id=model_id, diffusion_input=spec, seed=attempt_seed)
+            bg = generate_image(
+                model_id=model_id, diffusion_input=spec, seed=attempt_seed
+            )
             bg = apply_directional_gradient(bg, spec.text_design.text_zone)
             bg.save(f"artifacts/bg-attempt{attempt_num}-seed{attempt_seed}.png")
         except ThumbnailPipelineError as e:

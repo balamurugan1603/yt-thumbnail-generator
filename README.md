@@ -2,7 +2,7 @@
 
 ## Architecture:
 
-![YT Thumbnail generator - HLD](<YT Thumbnail Generator - HLD (2).png>)
+![YT Thumbnail generator - HLD](<YT Thumbnail Generator - HLD.png>)
 
 ## Project Structure:
 

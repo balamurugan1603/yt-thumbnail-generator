@@ -13,7 +13,7 @@ def get_diffusion_input(
         model="gpt-4o-2024-08-06",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": USER_TEMPLATE.format(prompt=prompt)},
+            {"role": "user", "content": prompt},
         ],
         response_format=StableDiffusionLLMInput,
         seed=seed,

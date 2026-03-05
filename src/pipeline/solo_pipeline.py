@@ -1,4 +1,5 @@
 from settings.config import SDXL_ID, SEED, TEMPERATURE, RetryConfig
+from core.prompt_builder import USER_TEMPLATE
 from services.llm_service import get_diffusion_input
 from services.diffusion_service import generate_image
 from utils.image_utils import apply_directional_gradient, render_text
@@ -197,15 +198,15 @@ def generate_thumbnail_pipeline(
         logger.error("Prompt validation failed: %s", e)
         return None
 
-    spec = get_diffusion_input(prompt, seed=SEED, temperature=TEMPERATURE)
+    spec = get_diffusion_input(
+        USER_TEMPLATE.format(prompt=prompt), seed=SEED, temperature=TEMPERATURE
+    )
     logger.info("Prompt enhanced | sdxl_prompt=%r", spec.prompt)
 
     attempts: list[GenerationAttempt] = []
 
-    for attempt_num, offset in enumerate(
-        retry_cfg.seed_offsets[: retry_cfg.max_attempts], start=1
-    ):
-        attempt_seed = SEED + offset
+    for attempt_num in range(1, retry_cfg.max_attempts + 1):
+        attempt_seed = SEED
         logger.info(
             "Generation attempt %d/%d | seed=%d",
             attempt_num,
@@ -239,6 +240,35 @@ def generate_thumbnail_pipeline(
             NUM_CHECKS,
             attempt.failed_check.name if attempt.failed_check else "none",
         )
+
+        # Repair: build a specific prompt for each failed check
+        if attempt.failed_check and attempt_num < retry_cfg.max_attempts:
+            failed_checks = [r for r in check_results if not r.passed]
+            failure_descriptions = {
+                "CLUTTER": "The text zone is too cluttered — simplify the background in that region.",
+                "CONTRAST": "Text contrast is insufficient — adjust colors for better legibility.",
+                "ARTIFACT": "The image contains faces, hands, text or unwanted symbols — remove them.",
+                "CLIP_SCORE": "The image is not semantically aligned with the topic — better reflect the theme.",
+            }
+            failure_notes = " ".join(
+                failure_descriptions.get(r.name, f"{r.name} check failed.")
+                for r in failed_checks
+            )
+            repair_prompt = (
+                f"TITLE: '{prompt}'\n\n"
+                f"The Stable Diffusion prompt you previously generated was: '{spec.prompt}'. "
+                f"Text design you previously specified: {spec.text_design}. "
+                f"The image failed quality checks with the following issues: {failure_notes} "
+                f"Generate a again ensuring these issues do not occur again."
+            )
+            logger.info(
+                "Repairing spec for attempt %d | failed_on=%s",
+                attempt_num + 1,
+                ", ".join(r.name for r in failed_checks),
+            )
+            spec = get_diffusion_input(
+                repair_prompt, seed=attempt_seed, temperature=TEMPERATURE
+            )
 
         if attempt.all_passed:
             logger.info("All checks passed on attempt %d", attempt_num)

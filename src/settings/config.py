@@ -31,6 +31,6 @@ class RetryConfig:
     contrast_ratio_threshold: float = WCAG_AA_LARGE
     clip_score_threshold: float = 0.2
     # Each attempt uses a different seed offset to get varied generations
-    seed_offsets: list[int] = field(default_factory=lambda: [0, 7, 13, 31])
+    # seed_offsets: list[int] = field(default_factory=lambda: [0, 7, 13, 31])
     # If all retries fail, fall back to the least-cluttered attempt
     fallback_to_best: bool = True

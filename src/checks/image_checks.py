@@ -9,6 +9,7 @@ from utils.image_utils import (
     calculate_zone_edge_density,
     dominant_color_in_zone,
     contrast_ratio,
+    extract_text_from_image,
     hex_to_rgb_bytes,
 )
 from services.clip_service import (
@@ -17,6 +18,7 @@ from services.clip_service import (
     clip_score,
 )
 from PIL import Image
+import Levenshtein
 
 CONTENT_PROMPT_PAIRS = [
     (
@@ -99,3 +101,9 @@ def check_clip_score(image: Image.Image, prompt: str, cfg: RetryConfig = RetryCo
     if score < cfg.clip_score_threshold:
         raise PromptImageSimilarityError(score, cfg.clip_score_threshold)
     return score
+
+
+def check_text_match(prompt: str, image: Image.Image, cfg: RetryConfig = RetryConfig()):
+    extracted_text = extract_text_from_image(image)
+    distance = Levenshtein.distance(prompt, extracted_text)
+    return distance

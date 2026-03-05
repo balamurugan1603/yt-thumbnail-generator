@@ -106,4 +106,5 @@ def check_clip_score(image: Image.Image, prompt: str, cfg: RetryConfig = RetryCo
 def check_text_match(prompt: str, image: Image.Image, cfg: RetryConfig = RetryConfig()):
     extracted_text = extract_text_from_image(image)
     distance = Levenshtein.distance(prompt, extracted_text)
-    return distance
+    normalized_distance = distance / max(len(prompt), len(extracted_text), 1)
+    return normalized_distance

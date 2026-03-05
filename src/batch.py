@@ -60,8 +60,8 @@ PROMPTS = [
     "Only 1% Can Solve This Riddle",
 ]
 
-ARTIFACTS_DIR = r"artifacts\runs\3"  # artifacts
-REPORTS_DIR = r"artifacts\runs\3"  # reports
+ARTIFACTS_DIR = r"artifacts\runs\increased_retries"  # artifacts
+REPORTS_DIR = r"artifacts\runs\increased_retries"  # reports
 os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 os.makedirs(REPORTS_DIR, exist_ok=True)
 

@@ -16,6 +16,7 @@ SDXL_LIGHTNING_ID = "@cf/bytedance/stable-diffusion-xl-lightning"
 SDXL_ID = "@cf/stabilityai/stable-diffusion-xl-base-1.0"
 SD_ID = "@cf/runwayml/stable-diffusion-v1-5-img2img"
 CLOUDFLARE_HEADERS = {"Authorization": f"Bearer {CLOUDFLARE_API_KEY}"}
+TESSERACT_PATH = os.getenv("TESSERACT_PATH", None)
 
 IMAGE_WIDTH = 1280
 IMAGE_HEIGHT = 720
@@ -26,7 +27,7 @@ WCAG_AA_LARGE = 3.0
 
 @dataclass
 class RetryConfig:
-    max_attempts: int = 4
+    max_attempts: int = 10
     clutter_threshold: float = 0.075
     contrast_ratio_threshold: float = WCAG_AA_LARGE
     clip_score_threshold: float = 0.2

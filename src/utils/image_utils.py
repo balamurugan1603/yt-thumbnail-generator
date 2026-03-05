@@ -8,6 +8,7 @@ import base64
 from io import BytesIO
 import cv2
 import pytesseract
+from settings.config import TESSERACT_PATH
 
 ZONES = {
     "left": (0.08, 0.50, 0.08, 0.92),
@@ -333,6 +334,7 @@ def extract_text_from_image(image: Image.Image) -> str:
     """
     Extracts all text from an image and formats it as a single sentence.
     """
+    image = cv2.cvtColor(np.array(image), cv2.COLOR_BGR2GRAY)
     extracted_text = pytesseract.image_to_string(image)
     clean_text = extracted_text.replace("\x0c", "").strip()
     single_line_text = re.sub(r"\s+", " ", clean_text)

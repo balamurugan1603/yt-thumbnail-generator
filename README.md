@@ -23,7 +23,6 @@
      - pipeline/
          - batch_pipeline.py
          - solo_pipeline.py
-     - reports/
      - services/
          - clip_service.py
          - diffusion_service.py
